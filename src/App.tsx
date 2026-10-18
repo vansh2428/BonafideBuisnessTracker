@@ -1660,6 +1660,7 @@ const AppLayout = () => {
         <div className="brand-block">
           <strong>BONAFIDE</strong>
           <span>Business Tracker</span>
+          <span>P&L Software</span>
         </div>
         <nav className="nav">
           {navItems.map((item) => (
