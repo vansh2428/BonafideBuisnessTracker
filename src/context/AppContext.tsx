@@ -159,13 +159,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteRawMaterial = (materialId: string) => {
-    const isReferenced = database.inventoryTransactions.some((entry) => entry.rawMaterialId === materialId)
+    const hasInventoryHistory = database.inventoryTransactions.some(
+      (entry) => entry.rawMaterialId === materialId && entry.type !== 'OPENING_STOCK',
+    )
       || database.recipeVersions.some((recipe) => recipe.ingredients.some((ingredient) => ingredient.rawMaterialId === materialId))
       || database.purchases.some((purchase) => purchase.items.some((item) => item.rawMaterialId === materialId))
       || database.wastage.some((entry) => entry.rawMaterialId === materialId)
       || database.stockAdjustments.some((entry) => entry.rawMaterialId === materialId);
-    if (isReferenced) return false;
-    setDatabase({ ...database, rawMaterials: database.rawMaterials.filter((item) => item.id !== materialId) });
+    if (hasInventoryHistory) return false;
+    setDatabase({
+      ...database,
+      rawMaterials: database.rawMaterials.filter((item) => item.id !== materialId),
+      inventoryTransactions: database.inventoryTransactions.filter(
+        (entry) => entry.rawMaterialId !== materialId || entry.type !== 'OPENING_STOCK',
+      ),
+    });
     return true;
   };
 

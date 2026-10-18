@@ -686,7 +686,7 @@ const InventoryPage = () => {
   const removeMaterial = (material: RawMaterial) => {
     if (!window.confirm(`Delete ${material.name}?`)) return;
     if (!deleteRawMaterial(material.id)) {
-      setMessage('This material is referenced by inventory, a purchase, or a recipe and cannot be deleted.');
+      setMessage('This material has inventory activity, a purchase, or a recipe and cannot be deleted.');
       return;
     }
     if (editingMaterialId === material.id) resetForm();
