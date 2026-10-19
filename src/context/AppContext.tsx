@@ -241,10 +241,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const transferAccounts = (fromAccountId: string, toAccountId: string, amount: number, date: string) => {
-    if (!database.accounts.some((account) => account.id === fromAccountId && account.active !== false) || !database.accounts.some((account) => account.id === toAccountId && account.active !== false)) {
+    const sourceAccount = database.accounts.find((account) => account.id === fromAccountId && account.active !== false);
+    const destinationAccount = database.accounts.find((account) => account.id === toAccountId && account.active !== false);
+    if (!sourceAccount || !destinationAccount) {
       throw new Error('Choose two valid accounts for the transfer.');
     }
-    const sourceAccount = database.accounts.find((account) => account.id === fromAccountId)!;
+    if (fromAccountId === toAccountId) throw new Error('Choose two different accounts for the transfer.');
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Transfer amount must be greater than zero.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(`${date}T00:00:00`).getTime())) {
+      throw new Error('Choose a valid transfer date.');
+    }
     if (getAccountBalance(sourceAccount, database.accountTransactions, date) + 0.000001 < amount) {
       throw new Error('The source account does not have enough available balance on that date.');
     }

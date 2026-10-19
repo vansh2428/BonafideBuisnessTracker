@@ -76,13 +76,21 @@ const DashboardPage = () => {
         </div>
       </header>
 
-      <section className="stats-grid">
-        <StatCard label="Selected Date Sales" value={formatMoney(selectedRevenue)} />
-        <StatCard label="Selected Date Items" value={String(selectedItems)} />
-        <StatCard label="Selected Date Product Cost" value={formatMoney(selectedCOGS)} tone="warning" />
-        <StatCard label="Selected Date Gross Profit" value={formatMoney(selectedGross)} tone="success" />
-        <StatCard label="Selected Date Expenses" value={formatMoney(selectedExpenses)} tone="danger" />
-        <StatCard label="Selected Date Net Profit" value={formatMoney(netProfit)} tone="success" />
+      <section>
+        <h2>Profit &amp; Loss</h2>
+        <div className="stats-grid">
+          <StatCard label="Selected Date Sales" value={formatMoney(selectedRevenue)} />
+          <StatCard label="Selected Date Items" value={String(selectedItems)} />
+          <StatCard label="Selected Date Product Cost" value={formatMoney(selectedCOGS)} tone="warning" />
+          <StatCard label="Selected Date Gross Profit" value={formatMoney(selectedGross)} tone="success" />
+          <StatCard label="Selected Date Expenses" value={formatMoney(selectedExpenses)} tone="danger" />
+          <StatCard label="Selected Date Net Profit" value={formatMoney(netProfit)} tone="success" />
+        </div>
+      </section>
+
+      <section>
+        <h2>Accounts</h2>
+        <div className="stats-grid">
         {accounts.filter((account) => account.active !== false).map((account) => <StatCard key={account.id} label={`${account.name} Balance`} value={formatMoney(getAccountBalance(account, accountTransactions))} />)}
         <StatCard label="Total Available" value={formatMoney(accounts.reduce((sum, account) => sum + getAccountBalance(account, accountTransactions), 0))} />
         <StatCard label="Inventory Value" value={formatMoney(inventoryValue)} tone="warning" />
@@ -90,6 +98,7 @@ const DashboardPage = () => {
         <StatCard label="Payables" value={formatMoney(payables)} tone="danger" />
         <StatCard label="Cash Received" value={formatMoney(selectedCash)} />
         <StatCard label="UPI Received" value={formatMoney(selectedUPI)} />
+        </div>
       </section>
 
       <section className="two-col">
@@ -1093,6 +1102,9 @@ const AccountsPage = () => {
   const [fromAccountId, setFromAccountId] = useState(accounts.find((account) => account.active !== false)?.id || '');
   const [toAccountId, setToAccountId] = useState(accounts.filter((account) => account.active !== false)[1]?.id || '');
   const [transferAmount, setTransferAmount] = useState(0);
+  const [transactionFilter, setTransactionFilter] = useState<'all' | 'cash' | 'online' | 'cash-expenses' | 'online-expenses'>('all');
+  const [transactionFromDate, setTransactionFromDate] = useState('');
+  const [transactionToDate, setTransactionToDate] = useState('');
   const [cashAccountId, setCashAccountId] = useState(accounts.find((account) => account.active !== false && account.type === 'cash')?.id || '');
   const [countedCash, setCountedCash] = useState(0);
   const [notes, setNotes] = useState('');
@@ -1109,7 +1121,41 @@ const AccountsPage = () => {
   const postedCollections = accountTransactions
     .filter((entry) => dailySaleIds.has(entry.source))
     .reduce((sum, entry) => sum + (entry.direction === 'in' ? entry.amount : -entry.amount), 0);
-  const recentTransactions = [...accountTransactions].sort((left, right) => right.date.localeCompare(left.date) || right.createdAt.localeCompare(left.createdAt)).slice(0, 30);
+  const filteredTransactions = [...accountTransactions]
+    .filter((entry) => !transactionFromDate || entry.date >= transactionFromDate)
+    .filter((entry) => !transactionToDate || entry.date <= transactionToDate)
+    .filter((entry) => {
+      if (transactionFilter === 'all') return true;
+      const account = accounts.find((item) => item.id === entry.accountId);
+      if (!account) return false;
+      if (transactionFilter.endsWith('-expenses') && entry.sourceType !== 'expense') return false;
+      return account.type === transactionFilter.replace('-expenses', '');
+    })
+    .sort((left, right) => right.date.localeCompare(left.date) || right.createdAt.localeCompare(left.createdAt));
+  const transferAccountTypes = new Map<string, Set<AccountType>>();
+  accountTransactions
+    .filter((entry) => entry.sourceType === 'transfer')
+    .forEach((entry) => {
+      const transferKey = entry.transferId || entry.source;
+      const accountType = accounts.find((account) => account.id === entry.accountId)?.type;
+      if (!accountType) return;
+      const types = transferAccountTypes.get(transferKey) ?? new Set<AccountType>();
+      types.add(accountType);
+      transferAccountTypes.set(transferKey, types);
+    });
+  const crossTypeTransferIds = new Set(
+    [...transferAccountTypes]
+      .filter(([, types]) => types.size > 1)
+      .map(([transferId]) => transferId),
+  );
+  const filteredTransactionTotal = filteredTransactions.reduce((sum, entry) => {
+    const transferKey = entry.transferId || (entry.sourceType === 'transfer' ? entry.source : '');
+    return sum + (crossTypeTransferIds.has(transferKey) ? 0 : entry.amount);
+  }, 0);
+  const selectedSourceAccount = activeAccounts.find((account) => account.id === fromAccountId);
+  const transferAvailableBalance = selectedSourceAccount
+    ? getAccountBalance(selectedSourceAccount, accountTransactions, selectedDate)
+    : 0;
   const getAccountDeleteReason = (account: typeof accounts[number]) => {
     const isReferenced = accountTransactions.some((entry) => entry.accountId === account.id)
       || cashReconciliations.some((entry) => entry.accountId === account.id)
@@ -1132,6 +1178,7 @@ const AccountsPage = () => {
 
   const handleTransfer = () => {
     try {
+      if (fromAccountId === toAccountId) throw new Error('Choose two different accounts for the transfer.');
       transferAccounts(fromAccountId, toAccountId, transferAmount, selectedDate);
       setTransferAmount(0);
       setMessage('Transfer posted as matching debit and credit entries.');
@@ -1198,11 +1245,12 @@ const AccountsPage = () => {
         <div className="card form-card">
           <h3>Transfer Between Accounts</h3>
           <div className="grid-two">
-            <label><span>From</span><select value={fromAccountId} onChange={(event) => setFromAccountId(event.target.value)}>{activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-            <label><span>To</span><select value={toAccountId} onChange={(event) => setToAccountId(event.target.value)}>{activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-            <label><span>Amount</span><input type="number" min="0" value={transferAmount} onChange={(event) => setTransferAmount(Number(event.target.value || 0))} /></label>
+            <label><span>From</span><select value={fromAccountId} onChange={(event) => setFromAccountId(event.target.value)}>{activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} ({account.type})</option>)}</select></label>
+            <label><span>To</span><select value={toAccountId} onChange={(event) => setToAccountId(event.target.value)}>{activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name} ({account.type})</option>)}</select></label>
+            <label><span>Amount</span><input type="number" min="0" step="any" value={transferAmount} onChange={(event) => setTransferAmount(Number(event.target.value))} /></label>
             <label><span>Date</span><input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} /></label>
           </div>
+          <p>Available in source account on this date: <strong>{formatMoney(transferAvailableBalance)}</strong></p>
           <div className="stack-actions"><button type="button" className="primary" onClick={handleTransfer}>Post Transfer</button></div>
         </div>
       </section>
@@ -1252,11 +1300,26 @@ const AccountsPage = () => {
       </div>}
       <div className="card table-wrap">
         <h3>Recent Account Transactions</h3>
+        <div className="grid-two">
+          <label><span>Show</span><select value={transactionFilter} onChange={(event) => setTransactionFilter(event.target.value as typeof transactionFilter)}>
+            <option value="all">All transactions</option>
+            <option value="cash">Cash transactions</option>
+            <option value="online">Online transactions</option>
+            <option value="cash-expenses">Cash expenses</option>
+            <option value="online-expenses">Online expenses</option>
+          </select></label>
+          <label><span>From date</span><input type="date" value={transactionFromDate} onChange={(event) => setTransactionFromDate(event.target.value)} /></label>
+          <label><span>To date</span><input type="date" value={transactionToDate} onChange={(event) => setTransactionToDate(event.target.value)} /></label>
+        </div>
+        {transactionFromDate && transactionToDate && transactionFromDate > transactionToDate && <p role="status">Start date must be on or before the end date.</p>}
         <table>
           <thead><tr><th>Date</th><th>Transaction ID</th><th>Account</th><th>Description</th><th>Direction</th><th>Amount</th></tr></thead>
           <tbody>
-            {recentTransactions.map((entry) => <tr key={entry.id}><td>{formatIndiaDate(entry.date)}</td><td>{entry.transactionId || entry.id}</td><td>{accounts.find((account) => account.id === entry.accountId)?.name || 'Unknown account'}</td><td>{entry.label}</td><td>{entry.direction}</td><td>{formatMoney(entry.amount)}</td></tr>)}
-            {!recentTransactions.length && <tr><td colSpan={6}>No account transactions posted yet.</td></tr>}
+            {transactionFromDate && transactionToDate && transactionFromDate > transactionToDate
+              ? <tr><td colSpan={6}>Choose a valid date span.</td></tr>
+              : filteredTransactions.map((entry) => <tr key={entry.id}><td>{formatIndiaDate(entry.date)}</td><td>{entry.transactionId || entry.id}</td><td>{accounts.find((account) => account.id === entry.accountId)?.name || 'Unknown account'}</td><td>{entry.label}</td><td>{entry.direction}</td><td>{formatMoney(entry.amount)}</td></tr>)}
+            {!(transactionFromDate && transactionToDate && transactionFromDate > transactionToDate) && !filteredTransactions.length && <tr><td colSpan={6}>No account transactions match these filters.</td></tr>}
+            {!!filteredTransactions.length && !(transactionFromDate && transactionToDate && transactionFromDate > transactionToDate) && <tr className="total-row"><th colSpan={5}>Total shown</th><th>{formatMoney(filteredTransactionTotal)}</th></tr>}
           </tbody>
         </table>
       </div>
