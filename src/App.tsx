@@ -11,7 +11,7 @@ import { calculateProductMargin, calculateRecipeConsumption, calculateRecipeCost
 import type { AppDatabase, ExpenseRecord, PaymentMethod, Product, PurchaseRecord, RawMaterial, SaleRecord, SupplierRecord, Unit } from './types';
 import type { DatabaseValidationResult } from './storage/storageService';
 import type { AccountType } from './types';
-import { getAccountBalance } from './utils/accounts';
+import { calculateDailySaleSettlement, getAccountBalance, getCashMovementEntries } from './utils/accounts';
 
 const navItems = [
   { to: '/', label: 'Dashboard' },
@@ -41,6 +41,7 @@ const TrendChart = lazy(() => import('./components/TrendChart'));
 const DashboardPage = () => {
   const { products, rawMaterials, sales, expenses, purchases, accounts, accountTransactions, dailySaleAdjustments, selectedDate } = useApp();
   const selectedSales = sales.filter((sale) => sale.date === selectedDate && sale.status === 'finalized');
+  const selectedAdjustments = dailySaleAdjustments.filter((adjustment) => adjustment.date === selectedDate);
   const selectedRevenue = selectedSales.reduce((sum, sale) => sum + sale.totalAmount, 0);
   const selectedItems = selectedSales.reduce((sum, sale) => sum + sale.totalItems, 0);
   const selectedCOGS = selectedSales.reduce((sum, sale) => sum + sale.totalCOGS, 0);
@@ -53,12 +54,8 @@ const DashboardPage = () => {
   const finalizedSales = sales.filter((sale) => sale.status === 'finalized');
   const receivables = [...new Set(finalizedSales.map((sale) => sale.date))].reduce((sum, date) => {
     const daySales = finalizedSales.filter((sale) => sale.date === date);
-    const dayTotal = daySales.reduce((daySum, sale) => daySum + sale.totalAmount, 0);
-    const dayPayments = daySales.reduce((daySum, sale) => daySum + Object.values(sale.paymentSummary).reduce((paid, amount) => paid + amount, 0), 0);
-    const dayAdjustmentTotal = dailySaleAdjustments
-      .filter((adjustment) => adjustment.date === date)
-      .reduce((daySum, adjustment) => daySum + adjustment.amount, 0);
-    return sum + Math.max(0, dayTotal - dayPayments - dayAdjustmentTotal);
+    const dayAdjustments = dailySaleAdjustments.filter((adjustment) => adjustment.date === date);
+    return sum + calculateDailySaleSettlement(daySales, dayAdjustments).outstanding;
   }, 0);
   const payables = purchases.reduce((sum, purchase) => sum + Math.max(0, purchase.total - purchase.paidAmount), 0);
 
@@ -154,31 +151,22 @@ const POSPage = () => {
   const [adjustmentDirection, setAdjustmentDirection] = useState<'increase' | 'decrease'>('decrease');
   const [adjustmentAmount, setAdjustmentAmount] = useState('');
   const [adjustmentReason, setAdjustmentReason] = useState('');
-  const [adjustmentAccountSelection, setAdjustmentAccountSelection] = useState('');
   const [toast, setToast] = useState('');
   const [finalizeKey, setFinalizeKey] = useState(() => generateId('sale-submission'));
   const finalizeLock = useRef(false);
   const cashAccounts = accounts.filter((account) => account.active !== false && account.type === 'cash');
   const onlineAccounts = accounts.filter((account) => account.active !== false && account.type === 'online');
-  const activeAccounts = accounts.filter((account) => account.active !== false);
   const cashAccountId = cashAccounts.some((account) => account.id === cashAccountSelection) ? cashAccountSelection : cashAccounts[0]?.id || '';
   const onlineAccountId = onlineAccounts.some((account) => account.id === onlineAccountSelection) ? onlineAccountSelection : onlineAccounts[0]?.id || '';
-  const adjustmentAccountId = activeAccounts.some((account) => account.id === adjustmentAccountSelection)
-    ? adjustmentAccountSelection
-    : activeAccounts[0]?.id || '';
 
-  const addToBasket = (productId: string) => {
-    setBasket((current) => ({ ...current, [productId]: (current[productId] || 0) + 1 }));
-  };
-
-  const updateQuantity = (productId: string, delta: number) => {
+  const setProductQuantity = (productId: string, value: string) => {
+    const quantity = Number(value);
     setBasket((current) => {
-      const next = (current[productId] || 0) + delta;
-      if (next <= 0) {
+      if (!Number.isFinite(quantity) || quantity <= 0) {
         const { [productId]: _removed, ...rest } = current;
         return rest;
       }
-      return { ...current, [productId]: next };
+      return { ...current, [productId]: Math.floor(quantity) };
     });
   };
 
@@ -194,9 +182,6 @@ const POSPage = () => {
   const totalSale = entries.reduce((sum, item) => sum + item.total, 0);
   const selectedAdjustments = dailySaleAdjustments.filter((adjustment) => adjustment.date === selectedDate);
   const netAdjustment = selectedAdjustments.reduce((sum, adjustment) => sum + (adjustment.direction === 'increase' ? adjustment.amount : -adjustment.amount), 0);
-  const increasedCollections = selectedAdjustments
-    .filter((adjustment) => adjustment.direction === 'increase')
-    .reduce((sum, adjustment) => sum + adjustment.amount, 0);
   const reducedSaleAmounts = selectedAdjustments
     .filter((adjustment) => adjustment.direction === 'decrease')
     .reduce((sum, adjustment) => sum + adjustment.amount, 0);
@@ -204,11 +189,12 @@ const POSPage = () => {
   const expectedDailySales = finalizedDailySales.reduce((sum, sale) => sum + sale.totalAmount, 0);
   const collectedDailyPayments = finalizedDailySales.reduce((sum, sale) => sum + Object.values(sale.paymentSummary).reduce((paid, amount) => paid + amount, 0), 0);
   const adjustedDailyExpectation = Math.max(0, expectedDailySales - reducedSaleAmounts);
-  const adjustedDailyCollections = collectedDailyPayments + increasedCollections;
+  const adjustedDailyCollections = collectedDailyPayments;
   const dailyCollectionVariance = adjustedDailyCollections - adjustedDailyExpectation;
+  const dailySettlement = calculateDailySaleSettlement(finalizedDailySales, selectedAdjustments);
   const currentSalePaid = Object.values(paymentSummary).reduce((sum, amount) => sum + amount, 0);
-  const currentSaleOutstanding = Math.max(0, totalSale - currentSalePaid - increasedCollections - reducedSaleAmounts);
-  const currentSaleExtra = Math.max(0, currentSalePaid + increasedCollections - (totalSale - reducedSaleAmounts));
+  const currentSaleOutstanding = Math.max(0, totalSale - currentSalePaid);
+  const currentSaleExtra = Math.max(0, currentSalePaid - totalSale);
 
   const saveAdjustment = () => {
     try {
@@ -217,7 +203,6 @@ const POSPage = () => {
         direction: adjustmentDirection,
         amount: Number(adjustmentAmount),
         reason: adjustmentReason,
-        accountId: adjustmentAccountId,
       });
       setAdjustmentAmount('');
       setAdjustmentReason('');
@@ -303,16 +288,19 @@ const POSPage = () => {
 
       <div className="pos-layout">
         <div className="card">
-          <div className="product-grid">
+          <div className="product-list">
             {products.filter((product) => product.active).map((product) => (
               <div key={product.id} className="product-card">
                 <strong>{product.name}</strong>
                 <span>{formatMoney(product.sellingPrice)}</span>
-                <div className="qty-row">
-                  <button type="button" aria-label={`Remove one ${product.name}`} onClick={() => updateQuantity(product.id, -1)}>-</button>
-                  <span>{basket[product.id] || 0}</span>
-                  <button type="button" aria-label={`Add one ${product.name}`} onClick={() => addToBasket(product.id)}>+</button>
-                </div>
+                <input
+                  aria-label={`Quantity for ${product.name}`}
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={basket[product.id] ?? 0}
+                  onChange={(event) => setProductQuantity(product.id, event.target.value)}
+                />
               </div>
             ))}
           </div>
@@ -339,7 +327,7 @@ const POSPage = () => {
 
           <div className="form-card">
             <h4>Daily Sale Adjustment</h4>
-            <p>Use + for extra money received or - for discounts, complimentary items, and other reductions. Account balance updates with the adjustment.</p>
+            <p>Adjustments record a reason only; they never represent a payment. Decreases reduce the amount due, while increases do not change cash, UPI, or the amount due.</p>
             <div className="grid-two">
               <label>
                 <span>Adjustment</span>
@@ -349,7 +337,6 @@ const POSPage = () => {
                 </select>
               </label>
               <label><span>Amount</span><input type="number" min="0.01" step="0.01" value={adjustmentAmount} onChange={(event) => setAdjustmentAmount(event.target.value)} /></label>
-              <label><span>Account</span><select value={adjustmentAccountId} onChange={(event) => setAdjustmentAccountSelection(event.target.value)}>{activeAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
               <label><span>Reason</span><input value={adjustmentReason} onChange={(event) => setAdjustmentReason(event.target.value)} placeholder="e.g. Round-off or complimentary item" /></label>
             </div>
             <div className="stack-actions">
@@ -360,7 +347,7 @@ const POSPage = () => {
               <div><span>Finalized sales for the day</span><strong>{formatMoney(expectedDailySales)}</strong></div>
               <div><span>Adjusted expected amount</span><strong>{formatMoney(adjustedDailyExpectation)}</strong></div>
               <div><span>Collected after adjustments</span><strong>{formatMoney(adjustedDailyCollections)}</strong></div>
-              <div><span>Outstanding for the day</span><strong>{formatMoney(Math.max(0, adjustedDailyExpectation - adjustedDailyCollections))}</strong></div>
+              <div><span>Outstanding for the day</span><strong>{formatMoney(dailySettlement.outstanding)}</strong></div>
               <div><span>Collection difference</span><strong>{dailyCollectionVariance > 0 ? '+' : ''}{formatMoney(dailyCollectionVariance)}</strong></div>
             </div>
           </div>
@@ -410,7 +397,9 @@ const POSPage = () => {
                 <td>{formatMoney(sale.paymentSummary.upi)}</td>
                 <td>{formatMoney(sale.paymentSummary.card)}</td>
                 <td>{formatMoney(sale.paymentSummary.other)}</td>
-                <td>{formatMoney(Math.max(0, sale.totalAmount - Object.values(sale.paymentSummary).reduce((sum, amount) => sum + amount, 0)))}</td>
+                <td>{formatMoney(sale.status === 'finalized'
+                  ? dailySettlement.saleOutstandings.get(sale.id) ?? Math.max(0, sale.totalAmount - Object.values(sale.paymentSummary).reduce((sum, amount) => sum + amount, 0))
+                  : Math.max(0, sale.totalAmount - Object.values(sale.paymentSummary).reduce((sum, amount) => sum + amount, 0)))}</td>
                 <td>{formatMoney(Math.max(0, Object.values(sale.paymentSummary).reduce((sum, amount) => sum + amount, 0) - sale.totalAmount))}</td>
                 <td><button type="button" className="secondary" onClick={() => loadSale(sale)}>{sale.status === 'finalized' ? 'Reopen' : 'Resume Draft'}</button></td>
               </tr>
@@ -421,17 +410,16 @@ const POSPage = () => {
         <div className="table-wrap">
           <h4>Adjustments for {formatIndiaDate(selectedDate)}</h4>
           <table>
-            <thead><tr><th>Adjustment</th><th>Reason</th><th>Account</th><th>Action</th></tr></thead>
+            <thead><tr><th>Adjustment</th><th>Reason</th><th>Action</th></tr></thead>
             <tbody>
               {selectedAdjustments.map((adjustment) => (
                 <tr key={adjustment.id}>
                   <td>{adjustment.direction === 'increase' ? '+' : '-'}{formatMoney(adjustment.amount)}</td>
                   <td>{adjustment.reason}</td>
-                  <td>{accounts.find((account) => account.id === adjustment.accountId)?.name ?? '—'}</td>
                   <td><button type="button" className="danger" onClick={() => deleteDailySaleAdjustment(adjustment.id)}>Remove</button></td>
                 </tr>
               ))}
-              {!selectedAdjustments.length && <tr><td colSpan={4}>No adjustments recorded for this date.</td></tr>}
+              {!selectedAdjustments.length && <tr><td colSpan={3}>No adjustments recorded for this date.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1223,7 +1211,7 @@ const AccountsPage = () => {
   const postedCollections = accountTransactions
     .filter((entry) => dailySaleIds.has(entry.source))
     .reduce((sum, entry) => sum + (entry.direction === 'in' ? entry.amount : -entry.amount), 0);
-  const filteredTransactions = [...accountTransactions]
+  const filteredTransactions = [...getCashMovementEntries(accountTransactions)]
     .filter((entry) => !transactionFromDate || entry.date >= transactionFromDate)
     .filter((entry) => !transactionToDate || entry.date <= transactionToDate)
     .filter((entry) => {

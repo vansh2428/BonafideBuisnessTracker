@@ -43,7 +43,7 @@ interface AppContextValue {
   restoreAccount: (accountId: string) => string | null;
   transferAccounts: (fromAccountId: string, toAccountId: string, amount: number, date: string) => void;
   saveCashReconciliation: (record: Omit<CashReconciliation, 'id' | 'createdAt' | 'updatedAt' | 'expectedBalance'>) => void;
-  addDailySaleAdjustment: (record: Omit<DailySaleAdjustment, 'id' | 'createdAt' | 'updatedAt' | 'accountId'> & { accountId: string }) => void;
+  addDailySaleAdjustment: (record: Omit<DailySaleAdjustment, 'id' | 'createdAt' | 'updatedAt'>) => void;
   deleteDailySaleAdjustment: (adjustmentId: string) => void;
   saveRecipeForProduct: (productId: string, ingredients: { rawMaterialId: string; quantity: number; unit: RawMaterial['unit'] }[]) => void;
   addPurchase: (record: PurchaseRecord) => void;
@@ -283,14 +283,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const addDailySaleAdjustment = (record: Omit<DailySaleAdjustment, 'id' | 'createdAt' | 'updatedAt' | 'accountId'> & { accountId: string }) => {
+  const addDailySaleAdjustment = (record: Omit<DailySaleAdjustment, 'id' | 'createdAt' | 'updatedAt'>) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(record.date) || Number.isNaN(new Date(`${record.date}T00:00:00`).getTime())) {
       throw new Error('Choose a valid adjustment date.');
     }
     if (!Number.isFinite(record.amount) || record.amount <= 0) throw new Error('Adjustment amount must be greater than zero.');
     if (!record.reason.trim()) throw new Error('Enter a reason for the adjustment.');
-    const account = database.accounts.find((item) => item.id === record.accountId && item.active !== false);
-    if (!account) throw new Error('Choose an active account for this adjustment.');
     const now = new Date().toISOString();
     const adjustment: DailySaleAdjustment = {
       ...record,
@@ -299,23 +297,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: now,
       updatedAt: now,
     };
-    const transaction = buildPaymentEntries([{
-      accountId: account.id,
-      amount: record.amount,
-      method: account.type === 'cash' ? 'cash' : 'upi',
-    }], {
-      date: record.date,
-      label: 'Daily sale adjustment',
-      source: `DailySaleAdjustment-${adjustment.id}`,
-      sourceType: 'manual',
-      direction: record.direction === 'increase' ? 'in' : 'out',
-      idempotencyPrefix: `daily-sale-adjustment:${adjustment.id}`,
-      notes: record.reason.trim(),
-    }, now);
     setDatabase({
       ...database,
       dailySaleAdjustments: [...database.dailySaleAdjustments, adjustment],
-      accountTransactions: [...database.accountTransactions, ...transaction],
     });
   };
 

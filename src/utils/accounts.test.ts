@@ -6,6 +6,7 @@ import {
   buildPaymentEntries,
   buildReversalEntry,
   buildTransferEntries,
+  calculateDailySaleSettlement,
   getAccountBalance,
   getTotalAccountBalance,
   hasPostedKey,
@@ -46,6 +47,53 @@ assert.equal(getAccountBalance({ ...accounts[0], openingDate: '2026-01-06' }, le
 assert.equal(hasPostedKey(ledger, saleEntries[0].idempotencyKey ?? ''), true);
 assert.equal(hasPostedKey(ledger, 'sale:duplicate'), false);
 assert.equal(appendIdempotentEntries(saleEntries, saleEntries).length, saleEntries.length);
+
+const settlement = calculateDailySaleSettlement([{
+  id: 'sale-with-adjustment',
+  totalAmount: 1500,
+  paymentSummary: { cash: 400, upi: 1000, card: 0, other: 0 },
+}], [{ amount: 100, direction: 'decrease' }]);
+assert.equal(settlement.outstanding, 0);
+assert.equal(settlement.saleOutstandings.get('sale-with-adjustment'), 0);
+
+const increaseDoesNotChangeDue = calculateDailySaleSettlement([{
+  id: 'sale-with-increase-note',
+  totalAmount: 1500,
+  paymentSummary: { cash: 400, upi: 1000, card: 0, other: 0 },
+}], [{ amount: 100, direction: 'increase' }]);
+assert.equal(increaseDoesNotChangeDue.outstanding, 100);
+assert.equal(increaseDoesNotChangeDue.saleOutstandings.get('sale-with-increase-note'), 100);
+
+const overpaidSaleWithAdjustment = calculateDailySaleSettlement([{
+  id: 'overpaid-sale-with-adjustment',
+  totalAmount: 1500,
+  paymentSummary: { cash: 400, upi: 1200, card: 0, other: 0 },
+}], [{ amount: 100, direction: 'increase' }]);
+assert.equal(overpaidSaleWithAdjustment.outstanding, 0);
+
+const oldConsumptionEntry = buildPaymentEntries([{ accountId: 'cash', amount: 100, method: 'cash' }], {
+  date: '2026-01-06',
+  label: 'Daily sale adjustment',
+  source: 'DailySaleAdjustment-old-consumption',
+  sourceType: 'manual',
+  direction: 'out',
+  idempotencyPrefix: 'daily-sale-adjustment:old-consumption',
+}, '2026-01-06T10:00:00.000Z')[0];
+const oldConsumptionReversal = buildReversalEntry(oldConsumptionEntry, '2026-01-07', 'Adjustment removed', '2026-01-07T10:00:00.000Z');
+assert.equal(getAccountBalance(accounts[0], [oldConsumptionEntry]), 100);
+assert.equal(getAccountBalance(accounts[0], [oldConsumptionEntry, oldConsumptionReversal]), 100);
+
+const extraReceiptEntry = buildPaymentEntries([{ accountId: 'cash', amount: 25, method: 'cash' }], {
+  date: '2026-01-08',
+  label: 'Daily sale adjustment',
+  source: 'DailySaleAdjustment-extra-receipt',
+  sourceType: 'manual',
+  direction: 'in',
+  idempotencyPrefix: 'daily-sale-adjustment:extra-receipt',
+}, '2026-01-08T10:00:00.000Z')[0];
+const extraReceiptReversal = buildReversalEntry(extraReceiptEntry, '2026-01-09', 'Adjustment removed', '2026-01-09T10:00:00.000Z');
+assert.equal(getAccountBalance(accounts[0], [extraReceiptEntry]), 100);
+assert.equal(getAccountBalance(accounts[0], [extraReceiptEntry, extraReceiptReversal]), 100);
 
 const migrated = migrateDatabase({
   accounts: [{

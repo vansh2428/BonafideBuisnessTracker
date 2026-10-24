@@ -1,5 +1,50 @@
-import type { Account, AccountTransaction, PaymentMethod } from '../types';
+import type { Account, AccountTransaction, DailySaleAdjustment, PaymentMethod, SaleDay } from '../types';
 import { generateId } from './ids';
+
+type DailySettlementSale = Pick<SaleDay, 'id' | 'totalAmount' | 'paymentSummary'>;
+
+export interface DailySaleSettlement {
+  outstanding: number;
+  saleOutstandings: Map<string, number>;
+}
+
+export const calculateDailySaleSettlement = (
+  sales: DailySettlementSale[],
+  adjustments: Pick<DailySaleAdjustment, 'amount' | 'direction'>[],
+): DailySaleSettlement => {
+  const totalSales = sales.reduce((total, sale) => total + sale.totalAmount, 0);
+  const totalPayments = sales.reduce((total, sale) => total + Object.values(sale.paymentSummary).reduce((paid, amount) => paid + amount, 0), 0);
+  const totalAdjustments = adjustments
+    .filter((adjustment) => adjustment.direction === 'decrease')
+    .reduce((total, adjustment) => total + adjustment.amount, 0);
+  let remainingOutstanding = Math.max(0, totalSales - totalPayments - totalAdjustments);
+  const saleOutstandings = new Map<string, number>();
+
+  for (const sale of sales) {
+    const paid = Object.values(sale.paymentSummary).reduce((total, amount) => total + amount, 0);
+    const due = Math.max(0, sale.totalAmount - paid);
+    const allocatedDue = Math.min(due, remainingOutstanding);
+    remainingOutstanding -= allocatedDue;
+    saleOutstandings.set(sale.id, allocatedDue);
+  }
+
+  return {
+    outstanding: Math.max(0, totalSales - totalPayments - totalAdjustments),
+    saleOutstandings,
+  };
+};
+
+export const getCashMovementEntries = (entries: AccountTransaction[]): AccountTransaction[] => {
+  const adjustmentTransactionIds = new Set(
+    entries
+      .filter((entry) => entry.source.startsWith('DailySaleAdjustment-'))
+      .map((entry) => entry.transactionId ?? entry.id),
+  );
+
+  return entries.filter((entry) =>
+    !adjustmentTransactionIds.has(entry.transactionId ?? entry.id)
+    && !(entry.reversesTransactionId && adjustmentTransactionIds.has(entry.reversesTransactionId)));
+};
 
 export interface LedgerPosting {
   accountId: string;
@@ -59,7 +104,7 @@ export const getAccountBalance = (
   account: Account,
   entries: AccountTransaction[],
   asOfDate = '9999-12-31',
-): number => asOfDate < account.openingDate ? 0 : account.openingBalance + entries
+): number => asOfDate < account.openingDate ? 0 : account.openingBalance + getCashMovementEntries(entries)
   .filter((entry) => entry.accountId === account.id && entry.date >= account.openingDate && entry.date <= asOfDate)
   .reduce((balance, entry) => balance + (entry.direction === 'in' ? entry.amount : -entry.amount), 0);
 
