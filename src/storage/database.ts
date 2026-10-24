@@ -1,4 +1,4 @@
-import type { Account, AccountTransaction, AppDatabase, Business, PaymentMethod, Purchase, PurchaseItem, Recipe, RecipeVersion, SaleDay, Settings, InventoryTransaction } from '../types';
+import type { Account, AccountTransaction, AppDatabase, Business, DailySaleAdjustment, PaymentMethod, Purchase, PurchaseItem, Recipe, RecipeVersion, SaleDay, Settings, InventoryTransaction } from '../types';
 import { generateId } from '../utils/ids';
 import { toBusinessDateKey } from '../utils/dates';
 import { createDefaultDatabase } from './databaseDefaults';
@@ -221,6 +221,7 @@ export const migrateDatabase = (input: unknown): AppDatabase => {
     recipes: migrateRecipes(source, versions, products),
     recipeVersions: versions,
     saleDays: asArray<SaleDay>(oldSaleDays),
+    dailySaleAdjustments: asArray<DailySaleAdjustment>(source.dailySaleAdjustments),
     purchases: migratePurchases(source.purchases),
     suppliers: asArray<AppDatabase['suppliers'][number]>(source.suppliers),
     expenses: asArray<AppDatabase['expenses'][number]>(source.expenses),

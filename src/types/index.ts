@@ -113,6 +113,14 @@ export interface SaleDay extends BaseRecord {
   finalizedAt?: string;
 }
 
+export interface DailySaleAdjustment extends BaseRecord {
+  date: string;
+  direction: 'increase' | 'decrease';
+  amount: number;
+  reason: string;
+  accountId?: string;
+}
+
 export interface PurchaseItem {
   id: string;
   rawMaterialId: string;
@@ -240,6 +248,7 @@ export interface Database {
   recipes: Recipe[];
   recipeVersions: RecipeVersion[];
   saleDays: SaleDay[];
+  dailySaleAdjustments: DailySaleAdjustment[];
   purchases: Purchase[];
   suppliers: Supplier[];
   expenses: Expense[];

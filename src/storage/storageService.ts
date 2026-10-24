@@ -73,6 +73,10 @@ export const validateDatabase = (input: unknown): DatabaseValidationResult => {
     if (!Array.isArray(input.cashReconciliations)) errors.push('Database collection "cashReconciliations" must be an array.');
     else hasStableIds(input.cashReconciliations, 'cashReconciliations', errors);
   }
+  if (input.dailySaleAdjustments !== undefined) {
+    if (!Array.isArray(input.dailySaleAdjustments)) errors.push('Database collection "dailySaleAdjustments" must be an array.');
+    else hasStableIds(input.dailySaleAdjustments, 'dailySaleAdjustments', errors);
+  }
 
   if (errors.length > 0) return { valid: false, errors };
 

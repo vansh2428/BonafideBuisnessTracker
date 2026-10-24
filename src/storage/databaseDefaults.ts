@@ -42,6 +42,7 @@ export const createDefaultDatabase = (now = new Date().toISOString()): AppDataba
     recipes: [],
     recipeVersions: [],
     saleDays: [],
+    dailySaleAdjustments: [],
     purchases: [],
     suppliers: [],
     expenses: [],

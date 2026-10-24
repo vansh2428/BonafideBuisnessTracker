@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { initializeDatabase, saveDatabase, snapshotPaymentSummary } from '../storage/storageService';
-import type { Account, AccountType, AppDatabase, Product, RawMaterial, SaleRecord, Recipe, RecipeVersion, PurchaseRecord, ExpenseRecord, WastageRecord, StockAdjustmentRecord, SupplierRecord, AuditLog, PaymentSummary, CashReconciliation, PaymentMethod } from '../types';
+import type { Account, AccountType, AppDatabase, Product, RawMaterial, SaleRecord, Recipe, RecipeVersion, PurchaseRecord, ExpenseRecord, WastageRecord, StockAdjustmentRecord, SupplierRecord, AuditLog, PaymentSummary, CashReconciliation, PaymentMethod, DailySaleAdjustment } from '../types';
 import { generateId } from '../utils/ids';
 import { toBusinessDateKey } from '../utils/dates';
 import { calculateRecipeConsumption } from '../utils/bom';
@@ -26,6 +26,7 @@ interface AppContextValue {
   accounts: Account[];
   accountTransactions: AppDatabase['accountTransactions'];
   cashReconciliations: CashReconciliation[];
+  dailySaleAdjustments: DailySaleAdjustment[];
   auditLogs: AuditLog[];
   setDatabase: (db: AppDatabase) => void;
   addProduct: (product: Product) => void;
@@ -42,6 +43,8 @@ interface AppContextValue {
   restoreAccount: (accountId: string) => string | null;
   transferAccounts: (fromAccountId: string, toAccountId: string, amount: number, date: string) => void;
   saveCashReconciliation: (record: Omit<CashReconciliation, 'id' | 'createdAt' | 'updatedAt' | 'expectedBalance'>) => void;
+  addDailySaleAdjustment: (record: Omit<DailySaleAdjustment, 'id' | 'createdAt' | 'updatedAt' | 'accountId'> & { accountId: string }) => void;
+  deleteDailySaleAdjustment: (adjustmentId: string) => void;
   saveRecipeForProduct: (productId: string, ingredients: { rawMaterialId: string; quantity: number; unit: RawMaterial['unit'] }[]) => void;
   addPurchase: (record: PurchaseRecord) => void;
   updatePurchase: (record: PurchaseRecord) => boolean;
@@ -277,6 +280,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...database.cashReconciliations.filter((item) => item.date !== record.date || item.accountId !== record.accountId),
         reconciliation,
       ],
+    });
+  };
+
+  const addDailySaleAdjustment = (record: Omit<DailySaleAdjustment, 'id' | 'createdAt' | 'updatedAt' | 'accountId'> & { accountId: string }) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(record.date) || Number.isNaN(new Date(`${record.date}T00:00:00`).getTime())) {
+      throw new Error('Choose a valid adjustment date.');
+    }
+    if (!Number.isFinite(record.amount) || record.amount <= 0) throw new Error('Adjustment amount must be greater than zero.');
+    if (!record.reason.trim()) throw new Error('Enter a reason for the adjustment.');
+    const account = database.accounts.find((item) => item.id === record.accountId && item.active !== false);
+    if (!account) throw new Error('Choose an active account for this adjustment.');
+    const now = new Date().toISOString();
+    const adjustment: DailySaleAdjustment = {
+      ...record,
+      reason: record.reason.trim(),
+      id: generateId('sale-adjustment'),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const transaction = buildPaymentEntries([{
+      accountId: account.id,
+      amount: record.amount,
+      method: account.type === 'cash' ? 'cash' : 'upi',
+    }], {
+      date: record.date,
+      label: 'Daily sale adjustment',
+      source: `DailySaleAdjustment-${adjustment.id}`,
+      sourceType: 'manual',
+      direction: record.direction === 'increase' ? 'in' : 'out',
+      idempotencyPrefix: `daily-sale-adjustment:${adjustment.id}`,
+      notes: record.reason.trim(),
+    }, now);
+    setDatabase({
+      ...database,
+      dailySaleAdjustments: [...database.dailySaleAdjustments, adjustment],
+      accountTransactions: [...database.accountTransactions, ...transaction],
+    });
+  };
+
+  const deleteDailySaleAdjustment = (adjustmentId: string) => {
+    const source = `DailySaleAdjustment-${adjustmentId}`;
+    const reversals = getUnreversedEntries(database.accountTransactions)
+      .filter((entry) => entry.source === source && entry.sourceType !== 'reversal')
+      .map((entry) => buildReversalEntry(entry, entry.date, 'Daily sale adjustment removed'));
+    setDatabase({
+      ...database,
+      dailySaleAdjustments: database.dailySaleAdjustments.filter((item) => item.id !== adjustmentId),
+      accountTransactions: [...database.accountTransactions, ...reversals],
     });
   };
 
@@ -708,9 +759,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (items.length !== draft.basket.length) throw new Error('Unable to process every product in this sale.');
     const totalSale = items.reduce((sum, item) => sum + item.total, 0);
-    const paymentTotal = normalizedPayment.cash + normalizedPayment.upi + normalizedPayment.card + normalizedPayment.other;
-    if (paymentTotal - totalSale > 0.001) throw new Error('Collected payment cannot exceed the sale total.');
-
     const now = new Date().toISOString();
     const hasPriorReversal = existing && database.accountTransactions.some((entry) => entry.source === existing.id && entry.sourceType === 'reversal');
     const paymentDate = hasPriorReversal ? toBusinessDateKey() : draft.date;
@@ -855,6 +903,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     accounts: database.accounts,
     accountTransactions: database.accountTransactions,
     cashReconciliations: database.cashReconciliations,
+    dailySaleAdjustments: database.dailySaleAdjustments,
     auditLogs: database.auditLogs,
     setDatabase,
     addProduct,
@@ -871,6 +920,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     restoreAccount,
     transferAccounts,
     saveCashReconciliation,
+    addDailySaleAdjustment,
+    deleteDailySaleAdjustment,
     saveRecipeForProduct,
     addPurchase,
     updatePurchase,
